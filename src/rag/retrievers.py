@@ -1,0 +1,135 @@
+from langchain_classic.retrievers import (
+    ContextualCompressionRetriever,
+    EnsembleRetriever,
+    ParentDocumentRetriever,
+)
+from langchain_classic.retrievers.document_compressors import CrossEncoderReranker
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document
+from langchain_core.stores import InMemoryByteStore
+
+RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
+
+
+def build_dense_retriever(
+    vectorstore,
+    parent_splitter,
+    child_splitter,
+    search_k: int = 10,
+) -> ParentDocumentRetriever:
+    """
+    Dense retriever: child chunks di-embed & di-search, tapi yang
+    dikembalikan ke LLM adalah parent chunk (konteks lebih utuh).
+
+    docstore selalu in-memory (bukan persist_directory seperti Chroma) --
+    ini konsekuensi dari desain ParentDocumentRetriever: parent chunk
+    disimpan sebagai objek Python biasa (bukan vector), jadi kalau kernel
+    Kaggle restart, docstore ini HILANG meskipun vectorstore-nya persist.
+    Artinya kamu harus re-run retriever.add_documents(...) tiap sesi baru,
+    walau Chroma collection-nya sendiri sudah ke-cache di disk. Ini bukan
+    bug, tapi trade-off yang perlu kamu sadar sebelum debug "kok konteks
+    kosong padahal vectorstore-nya udah ke-load".
+    """
+    docstore = InMemoryByteStore()
+    return ParentDocumentRetriever(
+        vectorstore=vectorstore,
+        docstore=docstore,
+        child_splitter=child_splitter,
+        parent_splitter=parent_splitter,
+        search_type="similarity",
+        search_kwargs={"k": search_k},
+    )
+
+
+def ingest_into_dense_retriever(
+    retriever: ParentDocumentRetriever, documents: list[Document]
+) -> None:
+    """
+    Trigger parent+child splitting internal ParentDocumentRetriever, isi
+    vectorstore (child) + docstore (parent) sekaligus.
+    Panggil ini SEKALI per sesi kernel setelah retriever dibuat.
+    """
+    retriever.add_documents(documents)
+
+
+def build_bm25_retriever(
+    documents: list[Document],
+    child_splitter,
+    k: int = 10,
+) -> BM25Retriever:
+    """
+    BM25 index dibangun dari CHILD-sized chunks (bukan raw page-level
+    documents seperti versi awal kamu) -- supaya granularitas konsisten
+    dengan dense retriever, jadi saat di-ensemble nanti kedua retriever
+    "berbicara dalam unit yang sama" (chunk ~400 char), bukan BM25
+    mengembalikan 1 halaman penuh sementara dense mengembalikan potongan
+    kecil.
+
+    Catatan: chunk ini di-split langsung dari `documents` pakai
+    child_splitter, TERPISAH dari child chunks yang dibuat internal oleh
+    ParentDocumentRetriever (yang di-split dari parent chunks dulu, baru
+    child). Jadi batas chunk-nya tidak dijamin identik character-per-
+    character dengan yang ada di dense index -- tapi ukuran & overlap-nya
+    sama, yang tadinya jadi concern utama.
+    """
+    child_chunks = child_splitter.split_documents(documents)
+    bm25 = BM25Retriever.from_documents(child_chunks)
+    bm25.k = k
+    return bm25
+
+
+def build_ensemble_retriever(
+    bm25_retriever: BM25Retriever,
+    dense_retriever: ParentDocumentRetriever,
+    weights: tuple[float, float] = (0.5, 0.5),
+) -> EnsembleRetriever:
+    """
+    Gabung BM25 (keyword, kuat untuk istilah pasal/nomor UU yang eksak)
+    dan dense retriever (semantic, kuat untuk pertanyaan berbahasa natural
+    yang gak persis pakai istilah dokumen).
+
+    weights=(0.5, 0.5) itu titik awal netral, BELUM di-tuning. Brief cuma
+    minta "tentukan bobot masing-masing" (ada keputusan eksplisit), bukan
+    minta hasil optimal -- tapi kalau nanti hasil retrieval kualitatif
+    keliatan bias ke salah satu, ini parameter pertama yang diubah.
+    """
+    return EnsembleRetriever(
+        retrievers=[bm25_retriever, dense_retriever],
+        weights=list(weights),
+    )
+
+
+def build_reranked_retriever(
+    base_retriever,
+    reranker_model_name: str = RERANKER_MODEL_NAME,
+    top_n: int = 3,
+) -> ContextualCompressionRetriever:
+    """
+    Cross-encoder reranker: base_retriever (ensemble) ambil kandidat lebih
+    banyak dulu (k=10 per retriever di atas), reranker baca ulang tiap
+    kandidat BERSAMA query-nya (cross-attention, bukan cosine similarity
+    dua vektor terpisah kayak bi-encoder bge-m3) -- lebih akurat tapi lebih
+    lambat, makanya cuma dipakai untuk re-urutkan hasil yang sudah
+    di-narrow, bukan untuk search awal ke seluruh koleksi dokumen.
+
+    top_n=3 sesuai contoh di brief ("Top-K (misal 3)").
+    """
+    reranker_model = HuggingFaceCrossEncoder(model_name=reranker_model_name)
+    compressor = CrossEncoderReranker(model=reranker_model, top_n=top_n)
+    return ContextualCompressionRetriever(
+        base_compressor=compressor,
+        base_retriever=base_retriever,
+    )
+
+
+def print_retrieved_docs(docs: list[Document]) -> None:
+    """Helper sanity-check: tampilkan chunk + sumber untuk inspeksi manual."""
+    for i, doc in enumerate(docs, start=1):
+        print(f"--- Dokumen {i} ---")
+        print(
+            f"Sumber: {doc.metadata.get('source_file', '?')}, "
+            f"halaman: {doc.metadata.get('page', '?')}"
+        )
+        print(doc.page_content)
+        print()
