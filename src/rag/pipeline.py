@@ -28,15 +28,12 @@ class RAGPipeline:
     Bungkus retriever + llm + prompt jadi satu objek dengan interface
     sederhana: generate(query) -> {"answer": str, "sources": list[Document]}.
 
-    Sengaja BUKAN pakai LCEL chain (`|`) seperti kode course awal kamu --
-    karena kita butuh akses eksplisit ke `docs` hasil retrieval (untuk
-    ditampilkan sebagai sitasi terpisah dari jawaban), dan LCEL chain
-    murni bikin itu harus di-invoke retriever 2x (sekali di dalam chain,
-    sekali lagi manual buat nampilin sumber) seperti bug di kode course
-    kamu (`ask_question` manggil `rag_chain.invoke` lalu
-    `compression_retriever.invoke` lagi secara terpisah -- boros, dan
-    berisiko dapat hasil retrieval yang beda kalau ada non-determinism).
-    Di sini retrieval cuma dipanggil sekali per query.
+    Sengaja BUKAN pakai LCEL chain (`|`) murni -- karena kita butuh akses
+    eksplisit ke `docs` hasil retrieval (untuk ditampilkan sebagai sitasi
+    terpisah dari jawaban), dan LCEL chain murni bikin retriever di-invoke
+    2x (sekali di dalam chain, sekali lagi manual buat nampilin sumber) --
+    boros, dan berisiko dapat hasil retrieval yang beda kalau ada
+    non-determinism. Di sini retrieval cuma dipanggil sekali per query.
     """
 
     def __init__(
@@ -75,11 +72,11 @@ def build_pipeline(
         di atas retriever "hybrid_rerank" ini, bukan gantiin).
 
     Kenapa satu fungsi bisa hasilin ketiga level itu (bukan tiga fungsi
-    terpisah): supaya kamu bisa jalanin ketiganya dengan PDF & embedding
-    yang SAMA persis dalam satu sesi notebook, buat ablation study --
-    "apakah hybrid beneran lebih baik dari dense-only, apakah reranker
-    beneran worth latency-nya" -- itu jauh lebih meyakinkan sebagai bukti
-    kalau dibandingkan pakai data identik, bukan run terpisah-pisah.
+    terpisah): supaya bisa jalanin ketiganya dengan PDF & embedding yang
+    SAMA persis dalam satu sesi notebook, buat ablation study -- "apakah
+    hybrid beneran lebih baik dari dense-only, apakah reranker beneran
+    worth latency-nya" -- itu jauh lebih meyakinkan sebagai bukti kalau
+    dibandingkan pakai data identik, bukan run terpisah-pisah.
     """
     if retriever_mode not in VALID_RETRIEVER_MODES:
         raise ValueError(

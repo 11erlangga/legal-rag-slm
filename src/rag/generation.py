@@ -74,11 +74,10 @@ def build_text_generation_pipeline(
 
     Alternatif do_sample=False (greedy) lebih deterministic/reproducible,
     yang buat legal domain sebenarnya defensible juga (jawaban gak boleh
-    "beda-beda" tiap ditanya ulang dengan pertanyaan sama). Saya pilih
-    tetap do_sample=True dulu konsisten sama pattern awal kamu -- kalau
-    nanti testing GRPO/RAG nunjukin jawaban suka goyang antar run untuk
-    query yang sama, ini parameter pertama yang saya sarankan diubah ke
-    do_sample=False.
+    "beda-beda" tiap ditanya ulang dengan pertanyaan sama). Dipilih tetap
+    do_sample=True dulu konsisten sama pattern awal -- kalau nanti testing
+    GRPO/RAG nunjukin jawaban suka goyang antar run untuk query yang sama,
+    ini parameter pertama yang disarankan diubah ke do_sample=False.
     """
     text_gen_pipeline = pipeline(
         model=model,
@@ -126,8 +125,8 @@ def build_prompt_runnable(
 
     FIX untuk bug prompt template hardcode token Llama-3 sebelumnya:
     dengan apply_chat_template, format token (ChatML untuk Qwen2.5, apapun
-    format Llama kalau kamu ganti model dasar) otomatis mengikuti tokenizer
-    model kamu sendiri -- gak ada lagi hardcoded string token yang bisa
+    format Llama kalau model dasar diganti) otomatis mengikuti tokenizer
+    model sendiri -- gak ada lagi hardcoded string token yang bisa
     mismatch sama model yang sebenarnya dipakai.
     """
 
