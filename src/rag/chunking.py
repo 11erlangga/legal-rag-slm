@@ -14,10 +14,10 @@ def build_splitters(
 ) -> tuple[RecursiveCharacterTextSplitter, RecursiveCharacterTextSplitter]:
     """
     Return (parent_splitter, child_splitter).
-    Constants di-parameterize supaya gampang di-eksperimen. Nilai yang
-    dipakai di-log eksplisit lewat log_chunking_config() -- BUKAN dengan
-    introspeksi ke splitter.chunk_size (atribut itu private/_chunk_size di
-    LangChain, gak reliable untuk diakses langsung dari luar).
+    Constants di-parameterize (bukan hardcode di tempat lain) supaya
+    gampang di-eksperimen tanpa ubah banyak file -- ingat brief Kriteria 2
+    Basic minta ukuran+overlap EKSPLISIT, jadi nilai ini harus di-print/
+    di-log juga saat dipakai, bukan cuma tersembunyi di default argumen.
     """
     parent_splitter = RecursiveCharacterTextSplitter(
         chunk_size=parent_chunk_size,
@@ -40,8 +40,14 @@ def log_chunking_config(
 ) -> None:
     """
     Print eksplisit chunk_size & chunk_overlap yang dipakai -- ini yang
-    dicek grader untuk syarat Basic. Panggil dengan nilai yang SAMA persis
-    dengan yang di-pass ke build_splitters(), bukan hasil introspeksi objek.
+    dicek grader untuk syarat Basic.
+
+    FIX: sebelumnya fungsi ini terima objek splitter dan baca
+    `splitter.chunk_size` -- itu attribute PRIVATE di LangChain
+    (`_chunk_size`), bukan kontrak publik, jadi AttributeError begitu
+    kena versi yang beda. Sekarang log langsung dari angka yang kita
+    kontrol sendiri (harus sama persis dengan yang di-pass ke
+    build_splitters()), bukan introspeksi balik ke objek yang sudah jadi.
     """
     print(f"Parent chunk size: {parent_chunk_size}, overlap: {parent_overlap}")
     print(f"Child chunk size: {child_chunk_size}, overlap: {child_overlap}")

@@ -90,7 +90,7 @@ def build_pipeline(
 
     # 2. Chunking
     parent_splitter, child_splitter = build_splitters()
-    log_chunking_config()
+    log_chunking_config()  # pakai default value yang sama persis dgn build_splitters()
 
     # 3. Embedding + vectorstore
     embedding_model = build_embedding_model()
