@@ -43,14 +43,36 @@ def build_dense_retriever(
 
 
 def ingest_into_dense_retriever(
-    retriever: ParentDocumentRetriever, documents: list[Document]
+    retriever: ParentDocumentRetriever,
+    documents: list[Document],
+    batch_size: int = 50,
 ) -> None:
     """
     Trigger parent+child splitting internal ParentDocumentRetriever, isi
     vectorstore (child) + docstore (parent) sekaligus.
     Panggil ini SEKALI per sesi kernel setelah retriever dibuat.
+
+    FIX: dokumen di-push per BATCH (bukan semua sekaligus), karena Chroma
+    membatasi jumlah embedding yang bisa di-upsert dalam satu panggilan API
+    (di versi yang kita pakai: max 5461). Kalau semua parent documents
+    (ratusan halaman dari 4 PDF UU) di-push sekaligus, hasil child chunks-nya
+    bisa jauh melebihi limit itu -- kejadian di kita: 6583 chunk vs limit 5461.
+
+    batch_size=50 di sini adalah jumlah PARENT-level input documents (halaman
+    PDF) per batch, BUKAN jumlah child chunks -- karena kita gak kontrol
+    langsung berapa child chunks dihasilkan per halaman (tergantung isi
+    halaman, bisa 1 chunk bisa belasan). 50 halaman per batch itu conservative
+    margin di bawah limit 5461, cukup aman kecuali halaman-halaman itu jauh
+    lebih padat teks dari biasanya -- kalau masih kena limit error lagi,
+    turunkan batch_size ini lebih kecil (misal 20).
     """
-    retriever.add_documents(documents)
+    for i in range(0, len(documents), batch_size):
+        batch = documents[i : i + batch_size]
+        retriever.add_documents(batch)
+        print(
+            f"Ingested batch {i // batch_size + 1}: {len(batch)} dokumen "
+            f"({i + len(batch)}/{len(documents)} total)"
+        )
 
 
 def build_bm25_retriever(
