@@ -1,24 +1,24 @@
 from IPython.display import Markdown, display
 from langchain_core.documents import Document
 
-from src.rag.chunking import build_splitters, log_chunking_config
-from src.rag.generation import (
-    SYSTEM_PROMPT_RAG,
-    build_prompt_runnable,
-    build_text_generation_pipeline,
-    format_context,
-    load_finetuned_model,
-)
 from src.rag.ingestion import load_pdfs, validate_pdf_count
+from src.rag.chunking import build_splitters, log_chunking_config
+from src.rag.vectorstore import build_embedding_model, build_vectorstore
 from src.rag.retrievers import (
-    build_bm25_retriever,
     build_dense_retriever,
+    ingest_into_dense_retriever,
+    build_bm25_retriever,
     build_ensemble_retriever,
     build_reranked_retriever,
-    ingest_into_dense_retriever,
     print_retrieved_docs,
 )
-from src.rag.vectorstore import build_embedding_model, build_vectorstore
+from src.rag.generation import (
+    load_finetuned_model,
+    build_text_generation_pipeline,
+    format_context,
+    build_prompt_runnable,
+    SYSTEM_PROMPT_RAG,
+)
 
 VALID_RETRIEVER_MODES = ("dense", "hybrid", "hybrid_rerank")
 
@@ -36,9 +36,7 @@ class RAGPipeline:
     non-determinism. Di sini retrieval cuma dipanggil sekali per query.
     """
 
-    def __init__(
-        self, retriever, llm, tokenizer, system_prompt: str = SYSTEM_PROMPT_RAG
-    ):
+    def __init__(self, retriever, llm, tokenizer, system_prompt: str = SYSTEM_PROMPT_RAG):
         self.retriever = retriever
         self.llm = llm
         self.prompt_runnable = build_prompt_runnable(tokenizer, system_prompt)
@@ -51,6 +49,69 @@ class RAGPipeline:
         return {"answer": raw_output.strip(), "sources": docs}
 
 
+def build_retrievers(
+    pdf_dir: str,
+    ensemble_weights: tuple[float, float] = (0.5, 0.5),
+    reranker_top_n: int = 3,
+) -> dict:
+    """
+    Bangun ketiga retriever_mode SEKALIGUS dari SATU proses ingestion
+    (load PDF, chunking, embedding, ingest ke dense retriever) -- bukan
+    diulang per mode seperti desain sebelumnya.
+
+    FIX untuk OOM: build_pipeline() versi sebelumnya dipanggil 3x terpisah
+    di notebook untuk bandingin retriever_mode, dan tiap panggilan itu
+    nge-RELOAD GENERATOR MODEL dari HF Hub -- padahal generator sama
+    sekali gak dibutuhkan untuk ablation retrieval (sanity_check_retrieval
+    cuma invoke retriever, gak pernah invoke llm). Akibatnya 3 instance
+    generator model (+ embedding model) numpuk di GPU memory tanpa pernah
+    dibebaskan, sampai OOM pas load instance ke-3.
+
+    Solusi: pisahkan proses build retriever (murah, gak butuh generator)
+    dari load generator (mahal, sekali aja). Bonus: "dense", "hybrid", dan
+    "hybrid_rerank" sebenarnya bertingkat (hybrid dibangun DI ATAS
+    dense_retriever yang sama, hybrid_rerank DI ATAS hybrid yang sama) --
+    jadi PDF+embedding cukup diproses sekali, dipakai bersama ketiganya,
+    bukan re-embed dokumen yang sama 3x.
+
+    Return: dict {"dense": ..., "hybrid": ..., "hybrid_rerank": ...}
+    """
+    documents = load_pdfs(pdf_dir)
+    validate_pdf_count(documents, expected_files=4)
+
+    parent_splitter, child_splitter = build_splitters()
+    log_chunking_config()
+
+    embedding_model = build_embedding_model()
+    vectorstore = build_vectorstore(embedding_model)
+
+    dense_retriever = build_dense_retriever(vectorstore, parent_splitter, child_splitter)
+    ingest_into_dense_retriever(dense_retriever, documents)
+
+    bm25_retriever = build_bm25_retriever(documents, child_splitter)
+    hybrid_retriever = build_ensemble_retriever(bm25_retriever, dense_retriever, ensemble_weights)
+
+    hybrid_rerank_retriever = build_reranked_retriever(hybrid_retriever, top_n=reranker_top_n)
+
+    return {
+        "dense": dense_retriever,
+        "hybrid": hybrid_retriever,
+        "hybrid_rerank": hybrid_rerank_retriever,
+    }
+
+
+def build_generator(hf_repo_id: str, hf_token: str | None = None):
+    """
+    Load generator SEKALI, dipakai ulang untuk retriever_mode manapun.
+    Jangan panggil berkali-kali dalam satu sesi kernel kecuali memang mau
+    ganti model (misal eksperimen run1 vs run2) -- ini komponen paling
+    berat di GPU memory.
+    """
+    model, tokenizer = load_finetuned_model(hf_repo_id, hf_token=hf_token)
+    llm = build_text_generation_pipeline(model, tokenizer)
+    return llm, tokenizer
+
+
 def build_pipeline(
     pdf_dir: str,
     hf_repo_id: str,
@@ -60,23 +121,14 @@ def build_pipeline(
     hf_token: str | None = None,
 ) -> RAGPipeline:
     """
-    Wiring penuh: PDF -> chunking -> embedding -> vectorstore -> retriever
-    (sesuai retriever_mode) -> model fine-tuning -> RAGPipeline siap pakai.
+    Convenience wrapper: bangun SATU retriever_mode + generator jadi
+    RAGPipeline siap pakai. Cocok untuk pemakaian TUNGGAL (misal section
+    "Full Pipeline untuk Interactive Use" di notebook).
 
-    retriever_mode:
-      - "dense": cuma ParentDocumentRetriever (semantic only) -- setara
-        requirement Basic ("uji retrieval pada query relevan").
-      - "hybrid": + BM25 via EnsembleRetriever -- setara Skilled.
-      - "hybrid_rerank": + CrossEncoderReranker -- setara Advanced
-        (minus HyDE & fallback DuckDuckGo, itu ditambahkan terpisah nanti
-        di atas retriever "hybrid_rerank" ini, bukan gantiin).
-
-    Kenapa satu fungsi bisa hasilin ketiga level itu (bukan tiga fungsi
-    terpisah): supaya bisa jalanin ketiganya dengan PDF & embedding yang
-    SAMA persis dalam satu sesi notebook, buat ablation study -- "apakah
-    hybrid beneran lebih baik dari dense-only, apakah reranker beneran
-    worth latency-nya" -- itu jauh lebih meyakinkan sebagai bukti kalau
-    dibandingkan pakai data identik, bukan run terpisah-pisah.
+    Untuk BANDINGIN beberapa retriever_mode sekaligus (ablation study),
+    JANGAN panggil fungsi ini berkali-kali -- pakai build_retrievers() +
+    build_generator() terpisah, supaya PDF gak di-ingest ulang dan
+    generator gak di-load ulang tiap mode (itu penyebab OOM sebelumnya).
     """
     if retriever_mode not in VALID_RETRIEVER_MODES:
         raise ValueError(
@@ -84,49 +136,25 @@ def build_pipeline(
             f"dapat: {retriever_mode!r}"
         )
 
-    # 1. Ingestion
-    documents = load_pdfs(pdf_dir)
-    validate_pdf_count(documents, expected_files=4)
+    retrievers = build_retrievers(pdf_dir, ensemble_weights, reranker_top_n)
+    retriever = retrievers[retriever_mode]
 
-    # 2. Chunking
-    parent_splitter, child_splitter = build_splitters()
-    log_chunking_config()  # pakai default value yang sama persis dgn build_splitters()
-
-    # 3. Embedding + vectorstore
-    embedding_model = build_embedding_model()
-    vectorstore = build_vectorstore(embedding_model)
-
-    # 4. Dense retriever (selalu dibangun, jadi basis untuk mode lain juga)
-    dense_retriever = build_dense_retriever(
-        vectorstore, parent_splitter, child_splitter
-    )
-    ingest_into_dense_retriever(dense_retriever, documents)
-
-    retriever = dense_retriever
-
-    if retriever_mode in ("hybrid", "hybrid_rerank"):
-        bm25_retriever = build_bm25_retriever(documents, child_splitter)
-        retriever = build_ensemble_retriever(
-            bm25_retriever, dense_retriever, ensemble_weights
-        )
-
-    if retriever_mode == "hybrid_rerank":
-        retriever = build_reranked_retriever(retriever, top_n=reranker_top_n)
-
-    # 5. Generation model (hasil fine-tuning sendiri)
-    model, tokenizer = load_finetuned_model(hf_repo_id, hf_token=hf_token)
-    llm = build_text_generation_pipeline(model, tokenizer)
+    llm, tokenizer = build_generator(hf_repo_id, hf_token=hf_token)
 
     return RAGPipeline(retriever=retriever, llm=llm, tokenizer=tokenizer)
 
 
-def sanity_check_retrieval(pipeline: RAGPipeline, query: str) -> None:
+def sanity_check_retrieval(retriever, query: str) -> None:
     """
-    Panggil manual setelah build_pipeline() untuk verifikasi retriever
-    jalan sebelum masuk interactive loop -- requirement eksplisit Basic
-    ("uji retrieval pada query relevan, tampilkan hasil chunk").
+    Verifikasi retriever jalan -- requirement eksplisit Basic ("uji
+    retrieval pada query relevan, tampilkan hasil chunk").
+
+    FIX: terima retriever LANGSUNG (bukan RAGPipeline seperti sebelumnya)
+    -- verifikasi retrieval gak butuh generator sama sekali, jadi bisa
+    dipanggil murah tanpa perlu build_pipeline() penuh (yang otomatis
+    ikut load generator).
     """
-    docs = pipeline.retriever.invoke(query)
+    docs = retriever.invoke(query)
     print(f"Query: {query}\n")
     print_retrieved_docs(docs)
 
