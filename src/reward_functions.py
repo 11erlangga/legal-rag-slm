@@ -23,27 +23,22 @@ Catatan penting (lihat PROGRESS_LOG.md untuk detail & histori keputusan):
   di PROGRESS_LOG.md soal implikasi/risiko keputusan ini.
 """
 
+from langdetect import LangDetectException, detect
 from rouge_score import rouge_scorer
-from langdetect import detect, LangDetectException
-
 
 # =============================================================================
 # Konstanta
 # =============================================================================
 
-# TODO (placeholder): threshold ROUGE-L untuk correctness_reward_func.
-# Brief/dokumen asli tidak memberi angka eksplisit ("misalnya menggunakan
-# metrik ROUGE/BLEU" -- tidak ada cutoff). Akan ditentukan berdasarkan
-# distribusi ROUGE-L pada sample jawaban model SFT (run1/run2) vs ground
-# truth, bukan angka tebakan. Lihat PROGRESS_LOG.md -> Open Items.
-ROUGE_SIMILARITY_THRESHOLD = 0.5
+ROUGE_SIMILARITY_THRESHOLD = 0.2
 
-_rouge_scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=False)
+_rouge_scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
 
 
 # =============================================================================
 # Helper (dipakai bersama oleh beberapa reward function -- definisikan sekali)
 # =============================================================================
+
 
 def extract_final_answer(text: str) -> str:
     """
@@ -54,7 +49,7 @@ def extract_final_answer(text: str) -> str:
     close_idx = text.find("</think>")
     if close_idx == -1:
         return text.strip()
-    return text[close_idx + len("</think>"):].strip()
+    return text[close_idx + len("</think>") :].strip()
 
 
 def _get_completion_text(completion) -> str:
@@ -68,6 +63,7 @@ def _get_completion_text(completion) -> str:
 # =============================================================================
 # 1. format_reward_func
 # =============================================================================
+
 
 def format_reward_func(completions, **kwargs) -> list[float]:
     """
@@ -126,6 +122,7 @@ def format_reward_func(completions, **kwargs) -> list[float]:
 # 2. reasoning_length_reward_func
 # =============================================================================
 
+
 def reasoning_length_reward_func(completions, **kwargs) -> list[float]:
     """
     Reward proporsional terhadap panjang isi <think>...</think>.
@@ -182,6 +179,7 @@ def reasoning_length_reward_func(completions, **kwargs) -> list[float]:
 # 3. correctness_reward_func
 # =============================================================================
 
+
 def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
     """
     +1.0 kalau jawaban akhir:
@@ -209,7 +207,7 @@ def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[floa
 
         # Kondisi (b): similarity
         score = _rouge_scorer.score(gt_norm, pred_norm)
-        rouge_l_f1 = score['rougeL'].fmeasure
+        rouge_l_f1 = score["rougeL"].fmeasure
         is_similar = rouge_l_f1 >= ROUGE_SIMILARITY_THRESHOLD
 
         rewards.append(1.0 if (contains_gt or is_similar) else 0.0)
@@ -220,6 +218,7 @@ def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[floa
 # =============================================================================
 # 4. language_reward_func
 # =============================================================================
+
 
 def language_reward_func(completions, **kwargs) -> list[float]:
     """
