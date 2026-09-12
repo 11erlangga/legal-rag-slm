@@ -180,7 +180,7 @@ def reasoning_length_reward_func(completions, **kwargs) -> list[float]:
 # =============================================================================
 
 
-def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
+def correctness_reward_func(prompts, completions, output, **kwargs) -> list[float]:
     """
     +1.0 kalau jawaban akhir:
       (a) MENGANDUNG ground truth sebagai substring, ATAU
@@ -194,7 +194,7 @@ def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[floa
     extracted_answers = [extract_final_answer(r) for r in responses]
 
     rewards = []
-    for pred, gt in zip(extracted_answers, answer):
+    for pred, gt in zip(extracted_answers, output):
         pred_norm = pred.strip().lower()
         gt_norm = gt.strip().lower()
 
