@@ -5,6 +5,7 @@ Utility untuk load model + tokenizer (Unsloth) dan setup PEFT/LoRA,
 dipakai bareng di semua notebook eksperimen SFT.
 """
 
+from trl import SFTConfig, SFTTrainer
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import get_chat_template
 
@@ -75,3 +76,41 @@ def apply_lora(
     )
 
     return model
+
+
+def run_coldstart_sft(
+    model,
+    tokenizer,
+    coldstart_dataset,
+    output_dir="coldstart_checkpoint",
+    max_steps=150,
+    seed=1010,
+):
+    """
+    Mini-SFT singkat di atas checkpoint run1 (LoRA sudah attached).
+    max_steps sengaja kecil — tujuan cuma inject prior format, bukan re-training penuh.
+    """
+    sft_config = SFTConfig(
+        output_dir=output_dir,
+        max_steps=max_steps,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        learning_rate=1e-4,
+        logging_steps=10,
+        save_strategy="steps",
+        save_steps=50,
+        seed=seed,
+        dataset_text_field="text",
+        max_seq_length=2048,
+        packing=False,
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=coldstart_dataset,
+        args=sft_config,
+    )
+
+    trainer.train()
+    return trainer
